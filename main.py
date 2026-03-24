@@ -504,8 +504,9 @@ def get_usd_to_krw():
 
 
 @app.get("/")
-def read_root():
-    return {"message": "Welcome to Stock Dashboard API. Visit /docs for documentation."}
+def home():
+    # 1. 메인 주소 확인용 (https://...onrender.com/ 접속 시 확인)
+    return {"status": "alive", "message": "Stock API is running"}
 
 
 @app.get("/api/search/{query}", response_model=SearchResponse)
