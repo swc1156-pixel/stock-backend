@@ -111,10 +111,10 @@ app = FastAPI(title="Stock Dashboard Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 인터넷 어디서든 이 API에 접속할 수 있도록 전체 허용
+    allow_origins=["*"],  # 모든 도메인(Vercel 포함)에서의 접속을 허용합니다.
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # GET, POST 등 모든 통신 방식 허용
+    allow_headers=["*"],  # 모든 헤더 허용
 )
 
 
