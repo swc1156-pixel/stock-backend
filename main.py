@@ -9,6 +9,8 @@ from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta
 from typing import List, Optional
 
+import os
+from dotenv import load_dotenv
 import yfinance as yf
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,11 +22,14 @@ try:
 except ImportError:
     translator = None
 
+load_dotenv()  # .env 파일에서 환경 변수를 불러옵니다.
+
 try:
     # 1. 신형 라이브러리 우선 시도
     from google import genai
     from google.genai import types
     GEMINI_API_KEY = "AIzaSyB8hmvlHWRX5Pa1Tn9rd7n5-hIOhQUDuws"
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
     ai_legacy = False
 except ImportError:
@@ -32,6 +37,7 @@ except ImportError:
     try:
         import google.generativeai as genai
         GEMINI_API_KEY = "AIzaSyB8hmvlHWRX5Pa1Tn9rd7n5-hIOhQUDuws"
+        GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
         if GEMINI_API_KEY:
             genai.configure(api_key=GEMINI_API_KEY)
             ai_client = genai.GenerativeModel("gemini-2.5-flash")
@@ -954,8 +960,8 @@ def get_investor_trend(symbol: str):
 def get_top_kr_stocks():
     results = []
     try:
-        # 코스피 전체 (네이버 API 한도 초과 400 에러 방지를 위해 pageSize 축소)
-        for page in range(1, 30):
+        # 코스피 시총 상위 100개만 조회 (Vercel 10초 타임아웃 방지)
+        for page in range(1, 2):
             req = urllib.request.Request(f"https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page={page}&pageSize=100", headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
@@ -966,8 +972,8 @@ def get_top_kr_stocks():
                     name = item['stockName']
                     _us_stock_name_cache[sym] = name
                     results.append({"symbol": sym, "name": name})
-        # 코스닥 전체
-        for page in range(1, 30):
+        # 코스닥 시총 상위 100개만 조회 (Vercel 10초 타임아웃 방지)
+        for page in range(1, 2):
             req = urllib.request.Request(f"https://m.stock.naver.com/api/stocks/marketValue/KOSDAQ?page={page}&pageSize=100", headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
@@ -996,13 +1002,14 @@ def get_top_us_stocks():
         df = dfs[0]
         
         raw_list = []
-        for _, row in df.iterrows():
+        # 시총 상위 100개까지만 잘라서 처리하여 성능 최적화
+        for _, row in df.head(100).iterrows():
             sym = str(row['Symbol']).replace('.', '-') # BRK.B 같은 종목을 야후 파이낸스 규격(BRK-B)으로 변환
             name = str(row['Security'])
             raw_list.append((sym, name))
             
         temp_results = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(resolve_stock_name, sym, name): sym for sym, name in raw_list}
             for future in concurrent.futures.as_completed(futures):
                 try:
@@ -1038,13 +1045,14 @@ def get_top_us_ndx():
             name_col = 'Company' if 'Company' in df.columns else 'Security'
                 
             raw_list = []
-            for _, row in df.iterrows():
+            # NDX 상위 50개까지만 잘라서 처리하여 성능 최적화
+            for _, row in df.head(50).iterrows():
                 sym = str(row[sym_col]).replace('.', '-')
                 name = str(row[name_col])
                 raw_list.append((sym, name))
                 
             temp_results = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
                 futures = {executor.submit(resolve_stock_name, sym, name): sym for sym, name in raw_list}
                 for future in concurrent.futures.as_completed(futures):
                     try:

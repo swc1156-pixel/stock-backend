@@ -1,0 +1,9 @@
+{
+  "regions": ["iad1"],
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ]
+}
