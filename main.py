@@ -11,6 +11,7 @@ from typing import List, Optional
 
 import os
 from dotenv import load_dotenv
+import requests
 import yfinance as yf
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -47,6 +48,10 @@ except ImportError:
     except ImportError:
         ai_client = None
         ai_legacy = False
+
+# Vercel 환경에서 yfinance 봇 차단 방지를 위한 브라우저 세션 설정 추가
+yf_session = requests.Session()
+yf_session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'})
 
 SECTOR_TRANSLATIONS = {
     "Technology": "정보기술",
@@ -198,7 +203,7 @@ def get_ai_analysis(symbol: str, mode: int = 1):
     if not ai_client:
         raise HTTPException(status_code=500, detail="AI 라이브러리가 설치되지 않았습니다. 백엔드 터미널에서 'pip install google-generativeai' 를 입력해주세요.")
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol, session=yf_session)
         info = ticker.info or {}
         name = info.get("longName") or info.get("shortName") or symbol
         
@@ -323,7 +328,7 @@ def get_ai_recommend(market: str = "NASDAQ"):
     try:
         for sym, name in symbols_map.items():
             try:
-                tk = yf.Ticker(sym)
+                tk = yf.Ticker(sym, session=yf_session)
                 hist = tk.history(period="1mo")
                 if not hist.empty and "Close" in hist.columns:
                     prices = hist["Close"].dropna().tail(20).tolist()
@@ -498,7 +503,7 @@ def get_usd_to_krw():
     # 환율 정보는 1시간(3600초)마다 한 번씩만 갱신하여 속도 저하를 방지합니다.
     if (now - _exchange_rate_cache["time"]).total_seconds() > 3600:
         try:
-            tk = yf.Ticker("KRW=X")
+            tk = yf.Ticker("KRW=X", session=yf_session)
             hist = tk.history(period="1d")
             if not hist.empty:
                 rate = hist["Close"].iloc[-1]
@@ -631,7 +636,7 @@ def search_symbols(query: str):
 @app.get("/api/quote/{symbol}", response_model=QuoteResponse)
 def get_quote(symbol: str):
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol, session=yf_session)
         
         # 1. 실시간/최신 시세를 정확히 가져오기 위해 fast_info 및 history 우선 활용
         # yfinance의 .info는 캐싱 이슈로 인해 가격이 누락되거나 지연되는 경우가 많습니다.
@@ -887,6 +892,7 @@ def get_chart(
             symbol,
             period=period,
             interval=interval,
+            session=yf_session
         )
 
         if df.empty:
@@ -921,7 +927,7 @@ def get_chart(
 @app.get("/api/investor-trend/{symbol}", response_model=List[InvestorTrend])
 def get_investor_trend(symbol: str):
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(symbol, session=yf_session)
         hist = ticker.history(period="10d")
         if hist.empty:
             return []
