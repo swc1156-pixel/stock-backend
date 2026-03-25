@@ -29,7 +29,6 @@ try:
     # 1. 신형 라이브러리 우선 시도
     from google import genai
     from google.genai import types
-    GEMINI_API_KEY = "AIzaSyB8hmvlHWRX5Pa1Tn9rd7n5-hIOhQUDuws"
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
     ai_legacy = False
@@ -37,7 +36,6 @@ except ImportError:
     # 2. 신형이 없으면 예전에 설치해둔 구형 라이브러리로 자동 전환하여 에러 방지
     try:
         import google.generativeai as genai
-        GEMINI_API_KEY = "AIzaSyB8hmvlHWRX5Pa1Tn9rd7n5-hIOhQUDuws"
         GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
         if GEMINI_API_KEY:
             genai.configure(api_key=GEMINI_API_KEY)
@@ -900,7 +898,7 @@ def get_chart(
         elif interval in ["2m", "5m", "15m", "30m", "90m"]:
             period = "60d"
         elif interval in ["60m", "1h"]:
-            period = "730d"
+            period = "2y"
         else:
             period = "max"
 
