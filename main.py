@@ -867,8 +867,24 @@ def get_quote(symbol: str):
         )
     except Exception as e:
         import traceback
-        traceback.print_exc()  # 상세 에러 로그를 터미널에 출력
-        raise HTTPException(status_code=500, detail=f"Failed to fetch quote: {e}")
+        traceback.print_exc()
+        # 에러 발생 시 500 에러로 서버가 터지는 대신 임시 데이터를 반환하여 프론트엔드 화면을 보호합니다.
+        return QuoteResponse(
+            symbol=symbol,
+            name=symbol,
+            sector="알 수 없음",
+            exchange="알 수 없음",
+            price=0.0,
+            change=0.0,
+            changePct=0.0,
+            high52w=0.0,
+            currency="USD",
+            financials=Financials(revenue="-", operatingIncome="-", eps="-", per="-", pbr="-", roe="-"),
+            earningsDate="-",
+            institutionHoldPct="-",
+            businessSummary="현재 백엔드 서버(Render)의 IP가 야후 파이낸스에 의해 일시적으로 차단되어 데이터를 불러올 수 없습니다. 잠시 후 다시 시도해주세요.",
+            news=[]
+        )
 
 
 @app.get("/api/chart/{symbol}", response_model=ChartResponse)
@@ -922,7 +938,8 @@ def get_chart(
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Failed to fetch chart: {e}")
+        # 차트 데이터를 못 가져와도 에러를 던지지 않고 빈 배열을 반환합니다.
+        return ChartResponse(symbol=symbol, interval=interval, data=[])
 
 @app.get("/api/investor-trend/{symbol}", response_model=List[InvestorTrend])
 def get_investor_trend(symbol: str):
