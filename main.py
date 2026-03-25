@@ -412,8 +412,15 @@ def get_ai_recommend(market: str = "NASDAQ"):
 def _safe_number(v, default=None) -> Optional[float]:
     if v is None:
         return default
+    if isinstance(v, str):
+        v = v.replace(",", "").replace("%", "").replace("원", "").replace("배", "").strip()
+        if v in ["N/A", "-", "", "Infinity", "nan", "NaN"]:
+            return default
     try:
-        return float(v)
+        f = float(v)
+        if math.isnan(f) or math.isinf(f):
+            return default
+        return f
     except Exception:
         return default
 
@@ -680,8 +687,11 @@ def get_quote(symbol: str):
             print(f"⚠️ {symbol} info 데이터 로드 실패: {e}")
             info = {}
             
-        # 만약 info가 비어있다면, 야후 직접 호출로 백업 (미국 주식 등)
-        if not info and not symbol.endswith((".KS", ".KQ")):
+        is_korean = symbol.endswith((".KS", ".KQ"))
+
+        # 만약 info가 비어있거나 핵심 데이터가 누락되었다면, 야후 직접 호출로 강력하게 백업 (미국 주식 등)
+        needs_us_fallback = not is_korean and (not info or info.get("sector") is None)
+        if needs_us_fallback:
             try:
                 url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=summaryProfile,defaultKeyStatistics,financialData,price,summaryDetail"
                 req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
@@ -731,7 +741,6 @@ def get_quote(symbol: str):
             prev_close = _safe_number(info.get("previousClose") or info.get("regularMarketPreviousClose"))
             
         # 한국 주식이면 네이버 API 활용하여 강력한 백업
-        is_korean = symbol.endswith((".KS", ".KQ"))
         naver_data = {}
         total_infos = {}
         if is_korean:
@@ -800,8 +809,10 @@ def get_quote(symbol: str):
         pbr = info.get("priceToBook")
         roe = info.get("returnOnEquity")
         
-        # 네이버 데이터로 재무 지표 백업 (한국 주식)
-        if is_korean and total_infos:
+        # 네이버 데이터로 재무 지표 완벽 백업 (한국 주식)
+        if is_korean and naver_data:
+            finance_info = naver_data.get("financeInfo") or {}
+            
             def _clean_naver_fin(val_str):
                 if not val_str: return None
                 s = str(val_str).replace(",", "").replace("배", "").replace("원", "").replace("%", "")
@@ -810,9 +821,22 @@ def get_quote(symbol: str):
                 except:
                     return None
 
-            if pe is None: pe = _clean_naver_fin(total_infos.get("PER"))
-            if pbr is None: pbr = _clean_naver_fin(total_infos.get("PBR"))
-            if eps is None: eps = _clean_naver_fin(total_infos.get("EPS"))
+            if pe is None: pe = _clean_naver_fin(finance_info.get("per") or total_infos.get("PER"))
+            if pbr is None: pbr = _clean_naver_fin(finance_info.get("pbr") or total_infos.get("PBR"))
+            if eps is None: eps = _clean_naver_fin(finance_info.get("eps") or total_infos.get("EPS"))
+            
+            if revenue is None:
+                s_val = _clean_naver_fin(finance_info.get("sales"))
+                if s_val is not None:
+                    revenue = s_val * 100_000_000 # 억 단위 변환
+            if operating_margin is None:
+                om_val = _clean_naver_fin(finance_info.get("operatingMargin"))
+                if om_val is not None:
+                    operating_margin = om_val / 100.0
+            if roe is None:
+                roe_val = _clean_naver_fin(finance_info.get("roe"))
+                if roe_val is not None:
+                    roe = roe_val / 100.0
 
         # 2. For domestic stocks, .info is often incomplete.
         # If key metrics are missing, fetch from detailed statements as a fallback.
@@ -1083,8 +1107,8 @@ def get_investor_trend(symbol: str):
 def get_top_kr_stocks():
     results = []
     try:
-        # 코스피 시총 상위 100개만 조회 (Vercel 10초 타임아웃 방지)
-        for page in range(1, 2):
+        # 코스피 시총 상위 200개
+        for page in range(1, 3):
             req = urllib.request.Request(f"https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page={page}&pageSize=100", headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
@@ -1095,8 +1119,8 @@ def get_top_kr_stocks():
                     name = item['stockName']
                     _us_stock_name_cache[sym] = name
                     results.append({"symbol": sym, "name": name})
-        # 코스닥 시총 상위 100개만 조회 (Vercel 10초 타임아웃 방지)
-        for page in range(1, 2):
+        # 코스닥 시총 상위 200개
+        for page in range(1, 3):
             req = urllib.request.Request(f"https://m.stock.naver.com/api/stocks/marketValue/KOSDAQ?page={page}&pageSize=100", headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req, timeout=5) as response:
                 data = json.loads(response.read().decode('utf-8'))
@@ -1125,14 +1149,13 @@ def get_top_us_stocks():
         df = dfs[0]
         
         raw_list = []
-        # 시총 상위 100개까지만 잘라서 처리하여 성능 최적화
-        for _, row in df.head(100).iterrows():
-            sym = str(row['Symbol']).replace('.', '-') # BRK.B 같은 종목을 야후 파이낸스 규격(BRK-B)으로 변환
+        for _, row in df.head(500).iterrows(): # 500개 전체
+            sym = str(row['Symbol']).replace('.', '-')
             name = str(row['Security'])
             raw_list.append((sym, name))
             
         temp_results = {}
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             futures = {executor.submit(resolve_stock_name, sym, name): sym for sym, name in raw_list}
             for future in concurrent.futures.as_completed(futures):
                 try:
@@ -1168,14 +1191,13 @@ def get_top_us_ndx():
             name_col = 'Company' if 'Company' in df.columns else 'Security'
                 
             raw_list = []
-            # NDX 상위 50개까지만 잘라서 처리하여 성능 최적화
-            for _, row in df.head(50).iterrows():
+            for _, row in df.head(100).iterrows(): # 100개 전체
                 sym = str(row[sym_col]).replace('.', '-')
                 name = str(row[name_col])
                 raw_list.append((sym, name))
                 
             temp_results = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 futures = {executor.submit(resolve_stock_name, sym, name): sym for sym, name in raw_list}
                 for future in concurrent.futures.as_completed(futures):
                     try:
