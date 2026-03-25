@@ -426,6 +426,18 @@ def get_korean_name_from_naver(symbol: str) -> Optional[str]:
     # KOSPI/KOSDAQ 코드는 숫자로만 이루어져 있으므로, 알파벳(해외주식)인 경우 즉시 종료합니다.
     if not clean_sym.isdigit():
         return None
+    # 1. 한국 주식 (숫자로만 이루어진 경우) 빠른 통합 정보 API 우선 활용
+    if clean_sym.isdigit():
+        try:
+            url = f"https://m.stock.naver.com/api/stock/{clean_sym}/integration"
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=3) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                name = data.get("stockName")
+                if name:
+                    return name
+        except Exception:
+            pass
         
     try:
         # 1차 시도: 빠르고 안정적인 모바일 네이버 증권 통합 정보 API
@@ -441,6 +453,7 @@ def get_korean_name_from_naver(symbol: str) -> Optional[str]:
         
     try:
         # 2차 시도: 기존 자동완성 API 백업
+        # 2. 해외 주식(알파벳)이거나 1차 시도 실패 시, 네이버 자동완성 API 활용 (미국 주식 한글명 검색)
         safe_query = urllib.parse.quote(clean_sym)
         naver_url = f"https://ac.finance.naver.com/ac?q={safe_query}&q_enc=utf-8&st=111&r_format=json&r_enc=utf-8"
         req = urllib.request.Request(naver_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -666,12 +679,76 @@ def get_quote(symbol: str):
         except Exception as e:
             print(f"⚠️ {symbol} info 데이터 로드 실패: {e}")
             info = {}
+            
+        # 만약 info가 비어있다면, 야후 직접 호출로 백업 (미국 주식 등)
+        if not info and not symbol.endswith((".KS", ".KQ")):
+            try:
+                url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}?modules=summaryProfile,defaultKeyStatistics,financialData,price,summaryDetail"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    data = json.loads(res.read().decode('utf-8'))
+                    res_data = data.get("quoteSummary", {}).get("result", [])[0]
+                    
+                    profile = res_data.get("summaryProfile", {})
+                    fin_data = res_data.get("financialData", {})
+                    key_stats = res_data.get("defaultKeyStatistics", {})
+                    price_data = res_data.get("price", {})
+                    summary_detail = res_data.get("summaryDetail", {})
+                    
+                    info["sector"] = profile.get("sector")
+                    info["longBusinessSummary"] = profile.get("longBusinessSummary")
+                    
+                    def _get_raw(obj, key):
+                        return obj.get(key, {}).get("raw") if isinstance(obj.get(key), dict) else None
+
+                    info["totalRevenue"] = _get_raw(fin_data, "totalRevenue")
+                    info["operatingMargins"] = _get_raw(fin_data, "operatingMargins")
+                    info["returnOnEquity"] = _get_raw(fin_data, "returnOnEquity")
+                    
+                    info["trailingEps"] = _get_raw(key_stats, "trailingEps")
+                    info["forwardEps"] = _get_raw(key_stats, "forwardEps")
+                    info["trailingPE"] = _get_raw(key_stats, "trailingPE")
+                    info["forwardPE"] = _get_raw(key_stats, "forwardPE")
+                    info["priceToBook"] = _get_raw(key_stats, "priceToBook")
+                    
+                    info["shortName"] = price_data.get("shortName")
+                    info["longName"] = price_data.get("longName")
+                    info["currency"] = price_data.get("currency")
+                    info["exchange"] = price_data.get("exchangeName")
+                    info["fiftyTwoWeekHigh"] = _get_raw(summary_detail, "fiftyTwoWeekHigh")
+                    
+                    if price is None:
+                        price = _get_raw(price_data, "regularMarketPrice")
+                    if prev_close is None:
+                        prev_close = _get_raw(price_data, "regularMarketPreviousClose")
+            except Exception as e:
+                print(f"Direct quoteSummary fetch failed: {e}")
 
         # 2. 위 방법으로도 실패했다면 기존처럼 info에서 가져오기
         if price is None:
             price = _safe_number(info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose"))
         if prev_close is None:
             prev_close = _safe_number(info.get("previousClose") or info.get("regularMarketPreviousClose"))
+            
+        # 한국 주식이면 네이버 API 활용하여 강력한 백업
+        is_korean = symbol.endswith((".KS", ".KQ"))
+        naver_data = {}
+        total_infos = {}
+        if is_korean:
+            try:
+                clean_code = symbol.split(".")[0]
+                url = f"https://m.stock.naver.com/api/stock/{clean_code}/integration"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                with urllib.request.urlopen(req, timeout=3) as res:
+                    naver_data = json.loads(res.read().decode('utf-8'))
+                    for item in naver_data.get("stockItemTotalInfos", []):
+                        key = item.get("key")
+                        val = item.get("value")
+                        if key and val:
+                            total_infos[key] = val
+            except Exception as e:
+                print(f"Naver integration API error for {symbol}: {e}")
+
         change = price - prev_close if price is not None and prev_close is not None else None
         change_pct = (
             (change / prev_close * 100.0)
@@ -682,6 +759,23 @@ def get_quote(symbol: str):
         high52w = _safe_number(info.get("fiftyTwoWeekHigh"))
         sector_eng = info.get("sector") or info.get("quoteType") or "N/A"
         sector = SECTOR_TRANSLATIONS.get(sector_eng, sector_eng)
+        
+        # 한국 주식 네이버 데이터로 덮어쓰기
+        if is_korean and naver_data:
+            if not sector or sector == "N/A" or sector == "알 수 없음":
+                sector = naver_data.get("industryCodeName", sector)
+                
+            if price is None and "closePrice" in naver_data:
+                price = _safe_number(naver_data["closePrice"].replace(",", ""))
+            
+            if change_pct is None and "fluctuationsRatio" in naver_data:
+                change_pct = _safe_number(naver_data["fluctuationsRatio"])
+                if change is None and price is not None and "compareToPreviousClosePrice" in naver_data:
+                    change = _safe_number(naver_data["compareToPreviousClosePrice"].replace(",", ""))
+                    if "fluctuationsType" in naver_data:
+                        ftype = str(naver_data["fluctuationsType"])
+                        if ftype in {"4", "5"}: # 4=하한가, 5=하락
+                            change = -abs(change) if change else None
 
         name_eng = info.get("shortName") or info.get("longName") or symbol
         _, name = resolve_stock_name(symbol.upper(), name_eng)
@@ -705,6 +799,20 @@ def get_quote(symbol: str):
         pe = info.get("trailingPE") or info.get("forwardPE")
         pbr = info.get("priceToBook")
         roe = info.get("returnOnEquity")
+        
+        # 네이버 데이터로 재무 지표 백업 (한국 주식)
+        if is_korean and total_infos:
+            def _clean_naver_fin(val_str):
+                if not val_str: return None
+                s = str(val_str).replace(",", "").replace("배", "").replace("원", "").replace("%", "")
+                try:
+                    return float(s)
+                except:
+                    return None
+
+            if pe is None: pe = _clean_naver_fin(total_infos.get("PER"))
+            if pbr is None: pbr = _clean_naver_fin(total_infos.get("PBR"))
+            if eps is None: eps = _clean_naver_fin(total_infos.get("EPS"))
 
         # 2. For domestic stocks, .info is often incomplete.
         # If key metrics are missing, fetch from detailed statements as a fallback.
@@ -733,7 +841,9 @@ def get_quote(symbol: str):
                 print(f"Could not fetch detailed financials for {symbol}: {e}")
                 pass
 
-        currency = info.get("currency") or "USD"
+        currency = info.get("currency")
+        if not currency:
+            currency = "KRW" if is_korean else "USD"
 
         price_krw = None
         if price is not None:
@@ -762,16 +872,8 @@ def get_quote(symbol: str):
         if not business_summary:
             raw_summary = info.get("longBusinessSummary")
             
-            if not raw_summary and symbol.endswith((".KS", ".KQ")):
-                try:
-                    clean_code = symbol.split(".")[0]
-                    url = f"https://m.stock.naver.com/api/stock/{clean_code}/integration"
-                    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-                    with urllib.request.urlopen(req, timeout=3) as res:
-                        data = json.loads(res.read().decode('utf-8'))
-                        raw_summary = data.get("corpSummary")
-                except Exception:
-                    pass
+            if not raw_summary and is_korean and naver_data:
+                raw_summary = naver_data.get("corpSummary")
 
             if raw_summary:
                 summary_text = raw_summary.replace('\n', ' ').replace('\r', '').strip()
