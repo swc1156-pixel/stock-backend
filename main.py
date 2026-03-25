@@ -891,7 +891,8 @@ def get_chart(
         df = yf.download(
             symbol,
             period=period,
-            interval=interval
+            interval=interval,
+            progress=False
         )
 
         if df.empty:
